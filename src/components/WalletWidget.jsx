@@ -1,260 +1,226 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
-const short = (a) => (a && a.length > 16 ? `${a.slice(0, 10)}...${a.slice(-4)}` : a || '');
+function shortAddr(a) {
+  if (!a) return '';
+  if (a.length <= 16) return a;
+  return `${a.slice(0, 10)}…${a.slice(-4)}`;
+}
 
-export default function WalletWidget() {
+function fmtKas(v) {
+  const n = Number(v) || 0;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+export default function WalletWidget({ wallet }) {
+  const { state, connect, createWallet, importWallet, disconnect, forget, exportMnemonic, exportPrivateKey, loading, error } = wallet;
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState('receive');
-  const [state, setState] = useState({ address: '', connected: false, balance: 0, mode: '' });
-  const [price, setPrice] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [tab, setTab] = useState('overview');
+  const [seed, setSeed] = useState('');
+  const [seedAck, setSeedAck] = useState(false);
+  const [importVal, setImportVal] = useState('');
+  const [localMsg, setLocalMsg] = useState('');
+  const [secret, setSecret] = useState(null); // {kind,value}
 
-  // receive
-  const [qr, setQr] = useState('');
-  const [copied, setCopied] = useState(false);
-  // send
-  const [to, setTo] = useState('');
-  const [amount, setAmount] = useState('');
-  const [txId, setTxId] = useState('');
-  // onboarding / import
-  const [mnemonicInput, setMnemonicInput] = useState('');
-  const [newSeed, setNewSeed] = useState('');
-  // export
-  const [reveal, setReveal] = useState({ type: '', value: '' });
-
-  const mounted = useRef(true);
+  const connected = state && state.connected;
 
   useEffect(() => {
-    mounted.current = true;
-    const w = window.TTTWallet;
-    let unsub = () => {};
-    if (w) {
-      try {
-        const s = w.getState ? w.getState() : {};
-        if (s) setState((p) => ({ ...p, ...s }));
-      } catch (e) { /* ignore */ }
-      if (w.onChange) {
-        unsub = w.onChange((s) => {
-          if (mounted.current && s) setState((p) => ({ ...p, ...s }));
-        });
-      }
-      if (w.getPrice) {
-        w.getPrice().then((p) => { if (mounted.current) setPrice(p); }).catch(() => {});
-      }
-    }
-    return () => { mounted.current = false; try { unsub && unsub(); } catch (e) {} };
+    const onKey = (e) => { if (e.key === 'Escape') { setOpen(false); setSecret(null); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const guard = async (fn) => {
-    setError('');
-    setBusy(true);
-    try {
-      await fn();
-    } catch (e) {
-      setError(e && e.message ? e.message : String(e));
-    } finally {
-      if (mounted.current) setBusy(false);
-    }
-  };
-
-  const connect = () => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    await w.connect();
-  });
-
-  const createWallet = () => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    const res = await w.createWallet();
-    if (res && res.mnemonic) setNewSeed(res.mnemonic);
-  });
-
-  const importWallet = () => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    const m = mnemonicInput.trim();
-    if (!m) throw new Error('Enter your seed phrase.');
-    await w.importWallet(m);
-    setMnemonicInput('');
-  });
-
-  const makeQr = () => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    const url = await w.receiveQR();
-    if (mounted.current) setQr(url);
-  });
-
-  useEffect(() => {
-    if (open && tab === 'receive' && state.connected && !qr) {
-      makeQr();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, tab, state.connected]);
-
-  const copyAddr = async () => {
-    try {
-      await navigator.clipboard.writeText(state.address || '');
-      setCopied(true);
-      setTimeout(() => mounted.current && setCopied(false), 1500);
-    } catch (e) { setError('Could not copy address.'); }
-  };
-
-  const doSend = () => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    const addr = to.trim();
-    if (!w.isValidAddress || !w.isValidAddress(addr)) throw new Error('Invalid Kaspa address.');
-    const amt = parseFloat(amount);
-    if (!Number.isFinite(amt) || amt <= 0) throw new Error('Enter a valid amount.');
-    const id = await w.send(addr, amt);
-    if (mounted.current) { setTxId(id); setAmount(''); setTo(''); }
-  });
-
-  const doExport = (type) => guard(async () => {
-    const w = window.TTTWallet;
-    if (!w) throw new Error('Wallet kit not loaded.');
-    let value = '';
-    if (type === 'mnemonic') {
-      if (!w.exportMnemonic) throw new Error('Not available for this wallet.');
-      value = await w.exportMnemonic();
-    } else {
-      if (!w.exportPrivateKey) throw new Error('Not available for this wallet.');
-      value = await w.exportPrivateKey();
-    }
-    if (!value) throw new Error('Not available for this wallet.');
-    if (mounted.current) setReveal({ type, value });
-  });
-
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
-    setReveal({ type: '', value: '' });
-    setNewSeed('');
-    setTxId('');
-    setError('');
+    setSecret(null);
+    setSeed('');
+    setSeedAck(false);
+    setLocalMsg('');
+  }, []);
+
+  const toggle = () => setOpen((o) => !o);
+
+  const doConnect = async () => {
+    setLocalMsg('');
+    try { await connect(); } catch (e) { /* error surfaced below */ }
   };
 
-  const usdBal = price && typeof price.usd === 'number' ? (Number(state.balance) || 0) * price.usd : null;
-  const explorer = txId && window.TTTWallet && window.TTTWallet.explorerUrl ? window.TTTWallet.explorerUrl(txId) : '';
-
-  const panelStyle = {
-    position: 'absolute', top: '100%', right: 0, width: 320, maxHeight: '80vh',
-    overflowY: 'auto', zIndex: 50, marginTop: 8,
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)', padding: 16,
+  const doCreate = async () => {
+    setLocalMsg('');
+    setSeed('');
+    setSeedAck(false);
+    try {
+      const res = await createWallet();
+      if (res && res.mnemonic) {
+        setSeed(res.mnemonic);
+        setTab('overview');
+      }
+    } catch (e) { /* surfaced */ }
   };
+
+  const doImport = async () => {
+    setLocalMsg('');
+    const m = importVal.trim();
+    if (!m) { setLocalMsg('Enter your seed phrase.'); return; }
+    try {
+      await importWallet(m);
+      setImportVal('');
+      setTab('overview');
+    } catch (e) { /* surfaced */ }
+  };
+
+  const revealSecret = async (kind) => {
+    setLocalMsg('');
+    try {
+      let value = '';
+      if (kind === 'seed') value = await exportMnemonic();
+      else value = exportPrivateKey ? await exportPrivateKey() : '';
+      if (!value) { setLocalMsg('Not available for this wallet.'); return; }
+      setSecret({ kind, value });
+    } catch (e) {
+      setLocalMsg(e && e.message ? e.message : 'Export failed.');
+    }
+  };
+
+  const copy = (text) => {
+    try { navigator.clipboard.writeText(text); setLocalMsg('Copied to clipboard.'); }
+    catch (e) { setLocalMsg('Copy failed — select and copy manually.'); }
+  };
+
+  const isWatch = state && state.mode === 'watch';
 
   return (
-    <>
+    <div className="wallet-widget">
       <button
         data-ttt-wallet
-        className="btn pill"
-        onClick={() => setOpen((o) => !o)}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+        className="pill"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-label="TTT Kaspa wallet"
       >
-        <span className="live-dot" style={{ background: state.connected ? 'var(--accent)' : 'var(--muted)' }} />
-        {state.connected
-          ? <span>{short(state.address)} - {(Number(state.balance) || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} KAS</span>
-          : <span>TTT Kaspa - Connect</span>}
+        <span className="pill-dot" aria-hidden="true" />
+        {connected
+          ? <span className="pill-text">{shortAddr(state.address)} · {fmtKas(state.balance)} KAS</span>
+          : <span className="pill-text">TTT Kaspa · Connect</span>}
       </button>
 
       {open && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={close} />
-          <div data-ttt-wallet style={panelStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div className="wallet-panel" data-ttt-wallet>
+            <div className="wallet-panel-head">
               <strong>TTT Kaspa</strong>
-              <button className="btn" onClick={close} aria-label="Close" style={{ padding: '2px 10px' }}>X</button>
+              <button className="icon-btn" onClick={close} aria-label="Close">✕</button>
             </div>
 
-            {error && <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 10 }}>{error}</div>}
+            {!connected ? (
+              <div className="wallet-panel-body">
+                <p className="muted small">Create a new wallet or import an existing seed phrase.</p>
+                <button className="btn btn-accent full" onClick={doCreate} disabled={loading}>Create new wallet</button>
+                <button className="btn full" onClick={doConnect} disabled={loading}>Load saved wallet</button>
 
-            {!state.connected ? (
-              <div style={{ display: 'grid', gap: 10 }}>
-                <button className="btn btn-accent" onClick={connect} disabled={busy}>Connect / load wallet</button>
-                <button className="btn" onClick={createWallet} disabled={busy}>Create new wallet</button>
-                {newSeed && (
-                  <div className="card" style={{ borderColor: '#f59e0b' }}>
-                    <div style={{ color: '#f59e0b', fontSize: 13, fontWeight: 600 }}>Save this seed phrase - it cannot be recovered.</div>
-                    <code style={{ display: 'block', marginTop: 8, wordBreak: 'break-word', fontSize: 13 }}>{newSeed}</code>
+                {seed && (
+                  <div className="seed-box">
+                    <p className="warn">Save this phrase. It cannot be recovered.</p>
+                    <code className="seed-words">{seed}</code>
+                    <div className="row">
+                      <button className="btn small" onClick={() => copy(seed)}>Copy</button>
+                      <label className="chk">
+                        <input type="checkbox" checked={seedAck} onChange={(e) => setSeedAck(e.target.checked)} />
+                        I saved it
+                      </label>
+                    </div>
                   </div>
                 )}
-                <div>
-                  <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6 }}>Or import existing:</div>
-                  <textarea
-                    className="input"
-                    rows={2}
-                    placeholder="Enter 12/24-word seed phrase"
-                    value={mnemonicInput}
-                    onChange={(e) => setMnemonicInput(e.target.value)}
-                    style={{ width: '100%', resize: 'vertical' }}
-                  />
-                  <button className="btn" onClick={importWallet} disabled={busy} style={{ marginTop: 8 }}>Import wallet</button>
-                </div>
+
+                <div className="divider" />
+                <label className="field-label">Import seed phrase</label>
+                <textarea
+                  className="input"
+                  rows={2}
+                  placeholder="word1 word2 word3 …"
+                  value={importVal}
+                  onChange={(e) => setImportVal(e.target.value)}
+                />
+                <button className="btn full" onClick={doImport} disabled={loading}>Import wallet</button>
               </div>
             ) : (
-              <>
-                <div className="card" style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Balance</div>
-                  <strong style={{ fontSize: 20 }}>{(Number(state.balance) || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })} KAS</strong>
-                  <div style={{ fontSize: 13, color: 'var(--muted)' }}>{usdBal === null ? '-' : `$${usdBal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</div>
-                </div>
-
-                <div className="kb-tabs" style={{ marginBottom: 12 }}>
-                  {['receive', 'send', 'export'].map((t) => (
-                    <button key={t} className={`kb-tab${tab === t ? ' active' : ''}`} onClick={() => { setTab(t); setReveal({ type: '', value: '' }); }}>
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
+              <div className="wallet-panel-body">
+                <div className="seg">
+                  {['overview', 'export'].map((t) => (
+                    <button key={t} className={`seg-btn${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
+                      {t === 'overview' ? 'Overview' : 'Export'}
                     </button>
                   ))}
                 </div>
 
-                {tab === 'receive' && (
-                  <div style={{ textAlign: 'center' }}>
-                    {qr ? <img src={qr} alt="Receive QR" style={{ width: 180, height: 180, borderRadius: 12, background: '#fff', padding: 8 }} /> : <div className="kb-progress" style={{ width: 180, height: 180, margin: '0 auto', borderRadius: 12 }} />}
-                    <code style={{ display: 'block', marginTop: 10, wordBreak: 'break-word', fontSize: 12 }}>{state.address}</code>
-                    <button className="btn" onClick={copyAddr} style={{ marginTop: 8 }}>{copied ? 'Copied!' : 'Copy address'}</button>
-                  </div>
-                )}
+                {tab === 'overview' && (
+                  <div>
+                    <div className="kv"><span className="muted small">Address</span></div>
+                    <div className="addr-row">
+                      <code className="addr">{state.address}</code>
+                      <button className="btn small" onClick={() => copy(state.address)}>Copy</button>
+                    </div>
+                    <div className="kv big">
+                      <span>{fmtKas(state.balance)} KAS</span>
+                    </div>
+                    {isWatch && <p className="muted small">Watch-only wallet.</p>}
 
-                {tab === 'send' && (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    <input className="input" placeholder="kaspa:q..." value={to} onChange={(e) => setTo(e.target.value)} />
-                    <input className="input" type="number" step="any" min="0" placeholder="Amount (KAS)" value={amount} onChange={(e) => setAmount(e.target.value)} />
-                    <button className="btn btn-accent" onClick={doSend} disabled={busy}>{busy ? 'Sending...' : 'Send'}</button>
-                    {txId && (
-                      <div style={{ fontSize: 13 }}>
-                        Sent! <a href={explorer} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>View on explorer</a>
+                    {seed && (
+                      <div className="seed-box">
+                        <p className="warn">Save this phrase. It cannot be recovered.</p>
+                        <code className="seed-words">{seed}</code>
+                        <button className="btn small" onClick={() => copy(seed)}>Copy</button>
                       </div>
                     )}
+
+                    <div className="divider" />
+                    <button className="btn full" onClick={disconnect} disabled={loading}>Disconnect</button>
+                    <button className="btn full danger" onClick={forget} disabled={loading}>Forget wallet</button>
                   </div>
                 )}
 
                 {tab === 'export' && (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    <div style={{ fontSize: 13, color: '#f59e0b' }}>Keep this secret. Never share it with anyone.</div>
-                    <button className="btn" onClick={() => doExport('mnemonic')} disabled={busy}>Export seed phrase</button>
-                    <button className="btn" onClick={() => doExport('private')} disabled={busy}>Export private key</button>
-                    {reveal.value && (
-                      <div className="card" style={{ borderColor: '#f59e0b' }}>
-                        <div style={{ fontSize: 12, color: 'var(--muted)' }}>{reveal.type === 'mnemonic' ? 'Seed phrase' : 'Private key'}</div>
-                        <code style={{ display: 'block', marginTop: 6, wordBreak: 'break-word', fontSize: 12 }}>{reveal.value}</code>
-                        <button className="btn" onClick={() => setReveal({ type: '', value: '' })} style={{ marginTop: 8 }}>Hide</button>
-                      </div>
+                  <div>
+                    <p className="warn">Anyone with these secrets controls your funds. Never share them.</p>
+                    {isWatch ? (
+                      <p className="muted small">Export not available for watch-only wallets.</p>
+                    ) : (
+                      <>
+                        <button className="btn full" onClick={() => revealSecret('seed')}>Export seed phrase</button>
+                        <button className="btn full" onClick={() => revealSecret('key')}>Export private key</button>
+                      </>
                     )}
-                    <button className="btn" onClick={() => guard(async () => { const w = window.TTTWallet; if (w && w.disconnect) await w.disconnect(); })} style={{ color: '#ef4444' }}>Disconnect</button>
                   </div>
                 )}
-              </>
+              </div>
             )}
 
-            <div style={{ marginTop: 14, fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }}>
-              Keys generated locally in this browser. Never sent to any server.
-            </div>
+            {(error || localMsg) && (
+              <div className="wallet-msg">{error || localMsg}</div>
+            )}
+            <div className="wallet-note">Keys generated locally in this browser. Never sent to any server.</div>
           </div>
         </>
       )}
-    </>
+
+      {secret && (
+        <>
+          <div className="modal-backdrop" onClick={() => setSecret(null)} />
+          <div className="modal" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <strong>{secret.kind === 'seed' ? 'Seed phrase' : 'Private key'}</strong>
+              <button className="icon-btn" onClick={() => setSecret(null)} aria-label="Close">✕</button>
+            </div>
+            <p className="warn">Keep this secret. Never share it with anyone.</p>
+            <code className="seed-words">{secret.value}</code>
+            <div className="row">
+              <button className="btn small" onClick={() => copy(secret.value)}>Copy</button>
+              <button className="btn small" onClick={() => setSecret(null)}>Done</button>
+            </div>
+            <div className="wallet-note">Keys generated locally in this browser. Never sent to any server.</div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
